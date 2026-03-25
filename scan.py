@@ -41,6 +41,8 @@ def scan_youtube(takeout_dirs: list[str], vault_index: dict, existing_video_ids:
         "subscriptions": {"entries": [], "paths": []},
     }
 
+    result["_diagnostics"] = []
+
     for tdir in takeout_dirs:
         yt_data = find_youtube_data(tdir)
 
@@ -58,6 +60,16 @@ def scan_youtube(takeout_dirs: list[str], vault_index: dict, existing_video_ids:
             result["subscriptions"]["paths"].append(yt_data["subscriptions"])
             entries = parse_subscriptions(tdir)
             result["subscriptions"]["entries"].extend(entries)
+
+        # Diagnostic: YouTube folder found but no data files at expected locations
+        if "_yt_dir" in yt_data and "watch_history" not in yt_data:
+            available = yt_data.get("_available_files", [])
+            result["_diagnostics"].append({
+                "takeout_dir": tdir,
+                "yt_dir": yt_data["_yt_dir"],
+                "message": "YouTube folder found but no watch history file detected",
+                "files_found": available,
+            })
 
     # Deduplicate watch history by video_id
     seen_ids = set()
@@ -114,7 +126,7 @@ def scan_gemini(takeout_dirs: list[str]) -> dict:
 
 def scan_chatgpt(chatgpt_path: str | None) -> dict:
     """Scan ChatGPT export data."""
-    result = {"conversations": [], "path": None}
+    result = {"conversations": [], "path": None, "file_count": 0}
 
     if not chatgpt_path:
         return result
@@ -122,6 +134,7 @@ def scan_chatgpt(chatgpt_path: str | None) -> dict:
     data = find_chatgpt_data(chatgpt_path)
     if "conversations" in data:
         result["path"] = data["conversations"]
+        result["file_count"] = data.get("file_count", 1)
         result["conversations"] = parse_conversations_json(data["conversations"])
 
     return result
@@ -268,6 +281,9 @@ def generate_report(
     chatgpt_stats = conversation_stats(chatgpt["conversations"], min_messages)
     if chatgpt_stats["total"] > 0:
         lines.append("### ChatGPT Conversations")
+        file_count = chatgpt.get("file_count", 0)
+        if file_count > 1:
+            lines.append(f"- Source files: {file_count} (conversations-000.json through conversations-{file_count-1:03d}.json)")
         lines.append(f"- Total conversations: {chatgpt_stats['total']}")
         lines.append(f"- Substantive (>{min_messages} messages): {chatgpt_stats['substantive']}")
         lines.append(f"- Average messages per conversation: {chatgpt_stats['avg_messages']}")
@@ -319,6 +335,30 @@ def generate_report(
         lines.append("No recognized data types were found in the provided paths.")
         lines.append("Make sure Takeout directories are fully unzipped.")
         lines.append("")
+
+    # Diagnostics for partially-found data
+    diagnostics = youtube.get("_diagnostics", [])
+    if diagnostics:
+        lines.append("### Diagnostics")
+        for diag in diagnostics:
+            lines.append(f"**{diag['message']}**")
+            lines.append(f"- Takeout: `{diag['takeout_dir']}`")
+            lines.append(f"- YouTube folder: `{diag['yt_dir']}`")
+            files = diag.get("files_found", [])
+            if files:
+                lines.append(f"- Files found in YouTube folder ({len(files)}):")
+                for f in files[:30]:
+                    lines.append(f"  - `{f}`")
+                if len(files) > 30:
+                    lines.append(f"  - ... and {len(files) - 30} more")
+            else:
+                lines.append("- No files found (folder may be empty — check other Takeout parts)")
+            lines.append("")
+            lines.append("This typically happens with multi-part Takeout exports. "
+                         "The YouTube folder exists in this part but the watch history "
+                         "data is in a different zip file. Try pointing to a different "
+                         "part, or merge all parts into a single directory.")
+            lines.append("")
 
     # Recommended Import Priority
     if has_data:
@@ -434,6 +474,13 @@ def main():
     print(f"  YouTube: {len(youtube['watch_history']['entries'])} watch history, "
           f"{len(youtube['liked_videos']['entries'])} liked, "
           f"{len(youtube['subscriptions']['entries'])} subscriptions")
+    for diag in youtube.get("_diagnostics", []):
+        print(f"  WARNING: {diag['message']} in {os.path.basename(diag['takeout_dir'])}")
+        files = diag.get("files_found", [])
+        if files:
+            print(f"    Files found: {', '.join(files[:5])}{'...' if len(files) > 5 else ''}")
+        else:
+            print(f"    YouTube folder is empty — watch history likely in another Takeout part")
 
     print("Scanning Gemini conversations...")
     gemini = scan_gemini(valid_takeout_dirs)
@@ -441,7 +488,8 @@ def main():
 
     print("Scanning ChatGPT export...")
     chatgpt = scan_chatgpt(chatgpt_path)
-    print(f"  ChatGPT: {len(chatgpt['conversations'])} conversations")
+    file_info = f" (from {chatgpt['file_count']} files)" if chatgpt.get("file_count", 0) > 1 else ""
+    print(f"  ChatGPT: {len(chatgpt['conversations'])} conversations{file_info}")
 
     print("Scanning Grok export...")
     grok = scan_grok(grok_path)

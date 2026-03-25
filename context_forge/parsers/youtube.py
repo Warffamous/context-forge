@@ -148,13 +148,17 @@ def parse_watch_history_json(filepath: str) -> list[dict]:
 
 def parse_watch_history(takeout_dir: str) -> list[dict]:
     """Parse YouTube watch history from a Takeout directory. Tries JSON first, then HTML."""
-    # Try different known paths
-    paths = [
-        os.path.join(takeout_dir, "YouTube and YouTube Music", "history", "watch-history.json"),
-        os.path.join(takeout_dir, "YouTube and YouTube Music", "history", "watch-history.html"),
-        os.path.join(takeout_dir, "YouTube", "history", "watch-history.json"),
-        os.path.join(takeout_dir, "YouTube", "history", "watch-history.html"),
-    ]
+    # Try different known paths — covers standard structure and variations
+    yt_folders = ["YouTube and YouTube Music", "YouTube"]
+    paths = []
+    for yt in yt_folders:
+        yt_dir = os.path.join(takeout_dir, yt)
+        paths.extend([
+            os.path.join(yt_dir, "history", "watch-history.json"),
+            os.path.join(yt_dir, "history", "watch-history.html"),
+            os.path.join(yt_dir, "watch-history.json"),
+            os.path.join(yt_dir, "watch-history.html"),
+        ])
 
     for path in paths:
         if os.path.exists(path):
@@ -248,7 +252,14 @@ def parse_subscriptions(takeout_dir: str) -> list[dict]:
 
 
 def find_youtube_data(takeout_dir: str) -> dict:
-    """Scan a Takeout directory for available YouTube data types and their paths."""
+    """Scan a Takeout directory for available YouTube data types and their paths.
+
+    Handles multiple Takeout variations:
+    - Standard: YouTube and YouTube Music/history/watch-history.json
+    - Older: YouTube/history/watch-history.html
+    - Multi-part exports: YouTube folder may exist but history/ is in another part
+    - Localized folder names
+    """
     found = {}
 
     yt_dirs = [
@@ -260,33 +271,75 @@ def find_youtube_data(takeout_dir: str) -> dict:
         if not os.path.isdir(yt_dir):
             continue
 
-        # Watch history
-        for ext in ["json", "html"]:
-            path = os.path.join(yt_dir, "history", f"watch-history.{ext}")
+        found["_yt_dir"] = yt_dir  # Track which folder was found (for diagnostics)
+
+        # Watch history — check multiple known locations
+        watch_history_paths = [
+            os.path.join(yt_dir, "history", "watch-history.json"),
+            os.path.join(yt_dir, "history", "watch-history.html"),
+            # Some exports put history directly in the root
+            os.path.join(yt_dir, "watch-history.json"),
+            os.path.join(yt_dir, "watch-history.html"),
+        ]
+        for path in watch_history_paths:
             if os.path.exists(path):
                 found["watch_history"] = path
                 break
 
         # Search history
-        for ext in ["json", "html"]:
-            path = os.path.join(yt_dir, "history", f"search-history.{ext}")
+        search_history_paths = [
+            os.path.join(yt_dir, "history", "search-history.json"),
+            os.path.join(yt_dir, "history", "search-history.html"),
+            os.path.join(yt_dir, "search-history.json"),
+            os.path.join(yt_dir, "search-history.html"),
+        ]
+        for path in search_history_paths:
             if os.path.exists(path):
                 found["search_history"] = path
                 break
 
-        # Liked videos
-        liked_path = os.path.join(yt_dir, "playlists", "Liked videos.json")
-        if os.path.exists(liked_path):
-            found["liked_videos"] = liked_path
+        # Liked videos — check multiple naming conventions
+        liked_paths = [
+            os.path.join(yt_dir, "playlists", "Liked videos.json"),
+            os.path.join(yt_dir, "playlists", "liked-videos.json"),
+            os.path.join(yt_dir, "playlists", "Likes.json"),
+            os.path.join(yt_dir, "likes", "Liked videos.json"),
+        ]
+        for path in liked_paths:
+            if os.path.exists(path):
+                found["liked_videos"] = path
+                break
 
         # Subscriptions
-        for ext in ["json", "csv"]:
-            path = os.path.join(yt_dir, "subscriptions", f"subscriptions.{ext}")
+        sub_paths = [
+            os.path.join(yt_dir, "subscriptions", "subscriptions.json"),
+            os.path.join(yt_dir, "subscriptions", "subscriptions.csv"),
+            os.path.join(yt_dir, "subscriptions.json"),
+            os.path.join(yt_dir, "subscriptions.csv"),
+        ]
+        for path in sub_paths:
             if os.path.exists(path):
                 found["subscriptions"] = path
                 break
 
-        if found:
-            break
+        # If we found the YT dir but nothing inside, do a recursive file discovery
+        # to help diagnose what data IS actually there (multi-part export case)
+        if len(found) <= 1:  # Only _yt_dir set, no actual data files
+            found["_available_files"] = _discover_youtube_files(yt_dir)
+
+        break  # Use first found YT directory
 
     return found
+
+
+def _discover_youtube_files(yt_dir: str) -> list[str]:
+    """Walk a YouTube Takeout directory and list all files found.
+
+    Used for diagnostics when no known data files are found at expected paths.
+    """
+    files = []
+    for root, _dirs, filenames in os.walk(yt_dir):
+        for fname in filenames:
+            rel_path = os.path.relpath(os.path.join(root, fname), yt_dir)
+            files.append(rel_path)
+    return sorted(files)

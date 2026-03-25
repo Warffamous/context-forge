@@ -6,7 +6,14 @@ import tempfile
 import unittest
 
 from context_forge.parsers.youtube import extract_video_id, parse_watch_history_json
-from context_forge.parsers.chatgpt import parse_conversations_json, _extract_messages_from_mapping
+from context_forge.parsers.chatgpt import (
+    parse_conversations_json,
+    _extract_messages_from_mapping,
+    _load_chatgpt_json,
+    _is_split_filename,
+    find_chatgpt_data,
+)
+from context_forge.parsers.youtube import find_youtube_data
 from context_forge.parsers.chrome import parse_bookmarks_html
 
 
@@ -121,6 +128,72 @@ class TestChatGPTParser(unittest.TestCase):
         self.assertEqual(convs[0]["title"], "Test Conversation")
 
 
+    def test_split_file_detection(self):
+        self.assertTrue(_is_split_filename("conversations-000.json"))
+        self.assertTrue(_is_split_filename("conversations-013.json"))
+        self.assertFalse(_is_split_filename("conversations.json"))
+        self.assertFalse(_is_split_filename("other-file.json"))
+
+    def test_parse_split_files(self):
+        """Test loading ChatGPT conversations from multiple split files."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create split files
+            for i in range(3):
+                data = [
+                    {
+                        "id": f"conv_{i}_{j}",
+                        "title": f"Conversation {i}-{j}",
+                        "mapping": {
+                            "root": {"parent": None, "message": None},
+                            "m1": {
+                                "parent": "root",
+                                "message": {
+                                    "author": {"role": "user"},
+                                    "content": {"parts": [f"msg {i}-{j}"]},
+                                },
+                            },
+                        },
+                    }
+                    for j in range(2)
+                ]
+                path = os.path.join(tmpdir, f"conversations-{i:03d}.json")
+                with open(path, "w") as f:
+                    json.dump(data, f)
+
+            # Test loading from directory
+            result = _load_chatgpt_json(tmpdir)
+            self.assertEqual(len(result), 6)  # 3 files × 2 conversations
+
+            # Test find_chatgpt_data with directory
+            found = find_chatgpt_data(tmpdir)
+            self.assertIn("conversations", found)
+            self.assertEqual(found["file_count"], 3)
+
+            # Test parse_conversations_json with directory
+            convs = parse_conversations_json(tmpdir)
+            self.assertEqual(len(convs), 6)
+            self.assertEqual(convs[0]["source"], "chatgpt")
+
+    def test_parse_split_file_by_single_path(self):
+        """Test that pointing to one split file loads all siblings."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for i in range(2):
+                data = [{"id": f"conv_{i}", "title": f"Conv {i}", "mapping": {
+                    "root": {"parent": None, "message": None},
+                }}]
+                path = os.path.join(tmpdir, f"conversations-{i:03d}.json")
+                with open(path, "w") as f:
+                    json.dump(data, f)
+
+            # Point to just the first file — should find all siblings
+            single_path = os.path.join(tmpdir, "conversations-000.json")
+            result = _load_chatgpt_json(single_path)
+            self.assertEqual(len(result), 2)
+
+            found = find_chatgpt_data(single_path)
+            self.assertEqual(found["file_count"], 2)
+
+
 class TestChromeParser(unittest.TestCase):
     def test_parse_bookmarks_html(self):
         html = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
@@ -180,6 +253,57 @@ class TestQueueDB(unittest.TestCase):
             self.assertEqual(counts.get("complete"), 1)
 
             db.close()
+
+
+class TestYouTubeFindData(unittest.TestCase):
+    def test_standard_structure(self):
+        """Test finding YouTube data in standard Takeout structure."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create standard structure
+            yt_dir = os.path.join(tmpdir, "YouTube and YouTube Music", "history")
+            os.makedirs(yt_dir)
+            with open(os.path.join(yt_dir, "watch-history.json"), "w") as f:
+                json.dump([], f)
+
+            found = find_youtube_data(tmpdir)
+            self.assertIn("watch_history", found)
+
+    def test_empty_youtube_folder_diagnostics(self):
+        """Test that an empty YouTube folder reports diagnostics."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create YouTube folder with no data files (multi-part export scenario)
+            yt_dir = os.path.join(tmpdir, "YouTube and YouTube Music")
+            os.makedirs(yt_dir)
+
+            found = find_youtube_data(tmpdir)
+            self.assertNotIn("watch_history", found)
+            self.assertIn("_yt_dir", found)
+            self.assertIn("_available_files", found)
+
+    def test_youtube_folder_with_some_files(self):
+        """Test that YouTube folder with non-history files lists them in diagnostics."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yt_dir = os.path.join(tmpdir, "YouTube and YouTube Music")
+            os.makedirs(os.path.join(yt_dir, "playlists"))
+            # Write some non-history file
+            with open(os.path.join(yt_dir, "playlists", "some-playlist.json"), "w") as f:
+                json.dump([], f)
+
+            found = find_youtube_data(tmpdir)
+            self.assertNotIn("watch_history", found)
+            self.assertIn("_available_files", found)
+            self.assertIn("playlists/some-playlist.json", found["_available_files"])
+
+    def test_alternative_watch_history_location(self):
+        """Test finding watch history at root of YouTube folder (not in history/ subfolder)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yt_dir = os.path.join(tmpdir, "YouTube and YouTube Music")
+            os.makedirs(yt_dir)
+            with open(os.path.join(yt_dir, "watch-history.json"), "w") as f:
+                json.dump([], f)
+
+            found = find_youtube_data(tmpdir)
+            self.assertIn("watch_history", found)
 
 
 if __name__ == "__main__":

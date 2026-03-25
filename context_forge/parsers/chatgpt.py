@@ -4,16 +4,20 @@ ChatGPT exports come as a conversations.json file containing all conversations
 with their full message trees.
 """
 
+import glob
 import json
 import os
 from datetime import datetime
 
 
 def parse_conversations_json(filepath: str) -> list[dict]:
-    """Parse ChatGPT conversations.json into normalized conversation format."""
-    with open(filepath, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    """Parse ChatGPT conversations.json (or multiple split files) into normalized format.
 
+    Args:
+        filepath: Path to a single .json file, or a directory containing
+                  conversations-*.json split files.
+    """
+    data = _load_chatgpt_json(filepath)
     conversations = []
 
     for conv in data:
@@ -117,15 +121,103 @@ def _format_timestamp(ts) -> str:
         return str(ts)
 
 
+def _load_chatgpt_json(filepath: str) -> list[dict]:
+    """Load ChatGPT conversation data from a single file or directory of split files.
+
+    OpenAI exports large histories as numbered files:
+    conversations-000.json, conversations-001.json, ..., conversations-013.json
+
+    Args:
+        filepath: A single .json file path, or a directory containing split files.
+
+    Returns:
+        Merged list of raw conversation dicts.
+    """
+    if os.path.isdir(filepath):
+        return _load_split_files(filepath)
+
+    if os.path.isfile(filepath):
+        # Check if this is one file in a set of split files
+        parent_dir = os.path.dirname(filepath)
+        basename = os.path.basename(filepath)
+
+        # If it's a split file (conversations-NNN.json), load all siblings
+        if _is_split_filename(basename):
+            return _load_split_files(parent_dir)
+
+        # Single file
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else [data]
+
+    return []
+
+
+def _is_split_filename(filename: str) -> bool:
+    """Check if a filename matches the split pattern: conversations-NNN.json."""
+    import re
+    return bool(re.match(r"conversations-\d+\.json$", filename))
+
+
+def _load_split_files(directory: str) -> list[dict]:
+    """Load and merge all conversations-*.json split files from a directory."""
+    patterns = [
+        os.path.join(directory, "conversations-*.json"),
+        os.path.join(directory, "conversations.json"),
+    ]
+
+    files = set()
+    for pattern in patterns:
+        files.update(glob.glob(pattern))
+
+    if not files:
+        return []
+
+    all_conversations = []
+    for fpath in sorted(files):
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                all_conversations.extend(data)
+            else:
+                all_conversations.append(data)
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    return all_conversations
+
+
 def find_chatgpt_data(path: str) -> dict:
-    """Check if a ChatGPT export file exists and get basic info."""
+    """Check if a ChatGPT export exists and get basic info.
+
+    Accepts:
+    - Path to a single conversations.json file
+    - Path to a directory containing conversations.json or conversations-NNN.json split files
+    """
     found = {}
 
     if os.path.isfile(path) and path.endswith(".json"):
         found["conversations"] = path
+        # Count split siblings if this is one of them
+        parent_dir = os.path.dirname(path)
+        basename = os.path.basename(path)
+        if _is_split_filename(basename):
+            split_files = glob.glob(os.path.join(parent_dir, "conversations-*.json"))
+            found["file_count"] = len(split_files)
+        else:
+            found["file_count"] = 1
+
     elif os.path.isdir(path):
-        conv_path = os.path.join(path, "conversations.json")
-        if os.path.exists(conv_path):
-            found["conversations"] = conv_path
+        # Check for split files first (more specific), then single file
+        split_files = glob.glob(os.path.join(path, "conversations-*.json"))
+        single_file = os.path.join(path, "conversations.json")
+
+        if split_files:
+            found["conversations"] = path  # Pass directory — parser handles it
+            found["file_count"] = len(split_files)
+        elif os.path.exists(single_file):
+            found["conversations"] = single_file
+            found["file_count"] = 1
 
     return found
