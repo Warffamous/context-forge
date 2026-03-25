@@ -1,0 +1,41 @@
+# Context Forge Configuration
+# ============================
+
+# Path to 2ndbrain Knowledge-Web vault
+vault_path: ""
+
+# Anthropic API key (can share with 2ndbrain config)
+anthropic_api_key: ""
+
+# LLM Settings
+llm_model: "claude-sonnet-4-20250514"
+llm_temperature: 0.2
+llm_max_tokens: 4000
+
+# Source paths — Google Takeout directories (unzipped)
+takeout_dirs:
+  - ""
+  # - "path/to/Takeout-account2"
+  # - "path/to/Takeout-account3"
+
+# ChatGPT export (null if not available yet)
+chatgpt_export: null
+
+# Grok export directory (null if not available)
+grok_export: null
+
+# Filters
+youtube_min_watch_seconds: 30
+chat_min_messages: 5
+chat_min_density: 3           # Minimum density score (1-5) for full extraction
+
+# Processing
+batch_size: 20                # Process N items then pause for rate limiting
+inter_item_delay: 1           # Seconds between API calls
+
+# Retry Settings
+max_retry_count: 3
+
+# 2ndbrain integration
+# Path to 2ndbrain's queue.db (for YouTube history bridge)
+secondbrain_queue_db: ""
