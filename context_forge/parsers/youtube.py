@@ -147,7 +147,11 @@ def parse_watch_history_json(filepath: str) -> list[dict]:
 
 
 def parse_watch_history(takeout_dir: str) -> list[dict]:
-    """Parse YouTube watch history from a Takeout directory. Tries JSON first, then HTML."""
+    """Parse YouTube watch history from a Takeout directory. Tries JSON first, then HTML.
+
+    Checks standard locations and the My Activity/YouTube alternative path
+    (which can contain history predating 2021).
+    """
     # Try different known paths — covers standard structure and variations
     yt_folders = ["YouTube and YouTube Music", "YouTube"]
     paths = []
@@ -159,6 +163,12 @@ def parse_watch_history(takeout_dir: str) -> list[dict]:
             os.path.join(yt_dir, "watch-history.json"),
             os.path.join(yt_dir, "watch-history.html"),
         ])
+
+    # My Activity alternative location (same JSON format as watch-history.json)
+    paths.extend([
+        os.path.join(takeout_dir, "My Activity", "YouTube", "MyActivity.json"),
+        os.path.join(takeout_dir, "My Activity", "YouTube", "MyActivity.html"),
+    ])
 
     for path in paths:
         if os.path.exists(path):
@@ -280,6 +290,9 @@ def find_youtube_data(takeout_dir: str) -> dict:
             # Some exports put history directly in the root
             os.path.join(yt_dir, "watch-history.json"),
             os.path.join(yt_dir, "watch-history.html"),
+            # "My Activity" alternative location (can contain history predating 2021)
+            os.path.join(takeout_dir, "My Activity", "YouTube", "MyActivity.json"),
+            os.path.join(takeout_dir, "My Activity", "YouTube", "MyActivity.html"),
         ]
         for path in watch_history_paths:
             if os.path.exists(path):
@@ -328,6 +341,17 @@ def find_youtube_data(takeout_dir: str) -> dict:
             found["_available_files"] = _discover_youtube_files(yt_dir)
 
         break  # Use first found YT directory
+
+    # Fallback: check My Activity/YouTube even if no YouTube folder was found
+    if "watch_history" not in found:
+        my_activity_paths = [
+            os.path.join(takeout_dir, "My Activity", "YouTube", "MyActivity.json"),
+            os.path.join(takeout_dir, "My Activity", "YouTube", "MyActivity.html"),
+        ]
+        for path in my_activity_paths:
+            if os.path.exists(path):
+                found["watch_history"] = path
+                break
 
     return found
 

@@ -305,6 +305,36 @@ class TestYouTubeFindData(unittest.TestCase):
             found = find_youtube_data(tmpdir)
             self.assertIn("watch_history", found)
 
+    def test_my_activity_youtube_fallback(self):
+        """Test finding watch history via My Activity/YouTube/MyActivity.json."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # No YouTube folder at all — only My Activity
+            activity_dir = os.path.join(tmpdir, "My Activity", "YouTube")
+            os.makedirs(activity_dir)
+            with open(os.path.join(activity_dir, "MyActivity.json"), "w") as f:
+                json.dump([], f)
+
+            found = find_youtube_data(tmpdir)
+            self.assertIn("watch_history", found)
+            self.assertIn("MyActivity.json", found["watch_history"])
+
+    def test_my_activity_with_empty_youtube_folder(self):
+        """Test My Activity path is found when YouTube folder exists but is empty."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Empty YouTube folder (multi-part export — history is elsewhere)
+            yt_dir = os.path.join(tmpdir, "YouTube and YouTube Music")
+            os.makedirs(yt_dir)
+
+            # But My Activity has the data
+            activity_dir = os.path.join(tmpdir, "My Activity", "YouTube")
+            os.makedirs(activity_dir)
+            with open(os.path.join(activity_dir, "MyActivity.json"), "w") as f:
+                json.dump([], f)
+
+            found = find_youtube_data(tmpdir)
+            self.assertIn("watch_history", found)
+            self.assertIn("MyActivity.json", found["watch_history"])
+
 
 if __name__ == "__main__":
     unittest.main()
