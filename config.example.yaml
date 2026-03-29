@@ -18,11 +18,27 @@ takeout_dirs:
   # - "path/to/Takeout-account2"
   # - "path/to/Takeout-account3"
 
-# ChatGPT export (null if not available yet)
+# ChatGPT export — single .json file or directory of split files
+# OpenAI exports large histories as conversations-000.json through conversations-NNN.json
+# Point to the directory containing them; the parser auto-discovers and deduplicates.
 chatgpt_export: null
+# chatgpt_export: "C:\\Users\\sande\\Downloads\\Exports\\OpenAI\\af927f53012b61335a195bc292a84badc684117e6c147b6ce3f4143ae148f08e-2026-03-24-10-40-36-eef6619643274eacb274cbc5db763961"
 
-# Grok export directory (null if not available)
+# Grok export — single JSON file or directory
 grok_export: null
+# grok_export: "C:\\Users\\sande\\Downloads\\Exports\\Grok\\ttl\\30d\\export_data\\6cbce4b1-d0b6-40ea-a151-1c8a95cfa572\\prod-grok-backend.json"
+
+# Gemini plain-text exports — directories containing .txt files
+# These are manual copy-pastes from the Gemini UI
+gemini_dirs: []
+# gemini_dirs:
+#   - "C:\\Users\\sande\\Downloads\\Exports\\Gemini"
+# Expected files:
+#   - "#1 Chat with Gemini of Sanderunique account.txt"
+#   - "#2 Chat with Gemini of Sanderunique account.txt"
+#   - "#3 Chat with Gemini of Sanderunique account.txt"
+#   - "Chat with Gemini of Maxlevelup4u account.txt"
+#   - "Chats with Gemini of sanderlevelup4u account.txt"
 
 # Filters
 youtube_min_watch_seconds: 30

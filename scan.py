@@ -8,8 +8,9 @@ exports, and Grok exports. Generates a scan-report.md triage report.
 Usage:
     python scan.py --takeout ~/Takeout
     python scan.py --takeout ~/Takeout-1 --takeout ~/Takeout-2
-    python scan.py --takeout ~/Takeout --chatgpt ~/conversations.json
-    python scan.py --takeout ~/Takeout --grok ~/grok-export
+    python scan.py --takeout ~/Takeout --chatgpt ~/chatgpt-export-dir
+    python scan.py --takeout ~/Takeout --grok ~/grok-export/prod-grok-backend.json
+    python scan.py --gemini-dir ~/gemini-texts
     python scan.py --takeout ~/Takeout --vault ~/Knowledge-Web
 """
 
@@ -29,6 +30,7 @@ from context_forge.parsers.youtube import (
 from context_forge.parsers.gemini import find_gemini_data, parse_all_gemini
 from context_forge.parsers.chatgpt import find_chatgpt_data, parse_conversations_json
 from context_forge.parsers.grok import find_grok_data, parse_all_grok
+from context_forge.parsers.gemini_text import find_gemini_text_files, parse_all_gemini_text
 from context_forge.parsers.chrome import find_chrome_data, parse_bookmarks_html, parse_browsing_history_json
 from context_forge.vault import load_vault_index, get_existing_video_ids_from_queue
 
@@ -141,7 +143,7 @@ def scan_chatgpt(chatgpt_path: str | None) -> dict:
 
 
 def scan_grok(grok_path: str | None) -> dict:
-    """Scan Grok export data."""
+    """Scan Grok export data. Accepts a single JSON file or a directory."""
     result = {"conversations": [], "path": None}
 
     if not grok_path:
@@ -152,6 +154,22 @@ def scan_grok(grok_path: str | None) -> dict:
         result["path"] = grok_path
         result["conversations"] = parse_all_grok(grok_path)
 
+    return result
+
+
+def scan_gemini_text(gemini_dirs: list[str]) -> dict:
+    """Scan Gemini plain text files from directories."""
+    result = {"conversations": [], "paths": [], "file_count": 0}
+
+    if not gemini_dirs:
+        return result
+
+    for path in gemini_dirs:
+        txt_files = find_gemini_text_files(path)
+        result["paths"].extend(txt_files)
+        result["file_count"] += len(txt_files)
+
+    result["conversations"] = parse_all_gemini_text(gemini_dirs)
     return result
 
 
@@ -227,6 +245,7 @@ def generate_report(
     grok: dict,
     chrome: dict,
     min_messages: int = 5,
+    gemini_text: dict | None = None,
 ) -> str:
     """Generate the scan-report.md content."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -277,6 +296,22 @@ def generate_report(
             lines.append(f"- Date range: {gemini_stats['date_range'][0]} → {gemini_stats['date_range'][1]}")
         lines.append("")
 
+    # Gemini (plain text)
+    gemini_text_stats = conversation_stats(
+        (gemini_text or {}).get("conversations", []), min_messages
+    )
+    if gemini_text_stats["total"] > 0:
+        lines.append("### Gemini Conversations (Plain Text)")
+        file_count = (gemini_text or {}).get("file_count", 0)
+        if file_count:
+            lines.append(f"- Source files: {file_count} .txt files")
+        lines.append(f"- Total conversations: {gemini_text_stats['total']}")
+        lines.append(f"- Substantive (>{min_messages} messages): {gemini_text_stats['substantive']}")
+        lines.append(f"- Average messages per conversation: {gemini_text_stats['avg_messages']}")
+        if gemini_text_stats["date_range"]:
+            lines.append(f"- Date range: {gemini_text_stats['date_range'][0]} → {gemini_text_stats['date_range'][1]}")
+        lines.append("")
+
     # ChatGPT
     chatgpt_stats = conversation_stats(chatgpt["conversations"], min_messages)
     if chatgpt_stats["total"] > 0:
@@ -325,6 +360,7 @@ def generate_report(
         len(lv["entries"]) > 0,
         len(subs["entries"]) > 0,
         gemini_stats["total"] > 0,
+        gemini_text_stats["total"] > 0,
         chatgpt_stats["total"] > 0,
         grok_stats["total"] > 0,
         len(bm["entries"]) > 0,
@@ -373,6 +409,9 @@ def generate_report(
         if gemini_stats["substantive"] > 0:
             lines.append(f"{priority}. Gemini conversations (substantive) → LLM extraction")
             priority += 1
+        if gemini_text_stats["substantive"] > 0:
+            lines.append(f"{priority}. Gemini plain-text conversations (substantive) → LLM extraction")
+            priority += 1
         if chatgpt_stats["substantive"] > 0:
             lines.append(f"{priority}. ChatGPT conversations (substantive) → LLM extraction")
             priority += 1
@@ -410,8 +449,15 @@ def main():
     parser.add_argument(
         "--grok",
         default=None,
+        metavar="PATH",
+        help="Path to Grok export JSON file or directory",
+    )
+    parser.add_argument(
+        "--gemini-dir",
+        action="append",
+        default=[],
         metavar="DIR",
-        help="Path to Grok export directory",
+        help="Path to directory of Gemini plain-text .txt files (can specify multiple)",
     )
     parser.add_argument(
         "--vault",
@@ -441,12 +487,13 @@ def main():
     takeout_dirs = args.takeout or [d for d in config.get("takeout_dirs", []) if d]
     chatgpt_path = args.chatgpt or config.get("chatgpt_export")
     grok_path = args.grok or config.get("grok_export")
+    gemini_dirs = args.gemini_dir or [d for d in config.get("gemini_dirs", []) if d]
     vault_path = args.vault or config.get("vault_path", "")
     min_messages = config.get("chat_min_messages", 5)
 
-    if not takeout_dirs and not chatgpt_path and not grok_path:
+    if not takeout_dirs and not chatgpt_path and not grok_path and not gemini_dirs:
         print("Error: No data sources specified.", file=sys.stderr)
-        print("Use --takeout, --chatgpt, or --grok to specify data paths.", file=sys.stderr)
+        print("Use --takeout, --chatgpt, --grok, or --gemini-dir to specify data paths.", file=sys.stderr)
         sys.exit(1)
 
     # Validate paths
@@ -495,13 +542,19 @@ def main():
     grok = scan_grok(grok_path)
     print(f"  Grok: {len(grok['conversations'])} conversations")
 
+    gemini_text = {"conversations": [], "paths": [], "file_count": 0}
+    if gemini_dirs:
+        print("Scanning Gemini plain-text files...")
+        gemini_text = scan_gemini_text(gemini_dirs)
+        print(f"  Gemini (text): {len(gemini_text['conversations'])} conversations from {gemini_text['file_count']} files")
+
     print("Scanning Chrome data...")
     chrome = scan_chrome(valid_takeout_dirs)
     print(f"  Chrome: {len(chrome['bookmarks']['entries'])} bookmarks, "
           f"{len(chrome['browsing_history']['entries'])} history entries")
 
     # Generate report
-    report = generate_report(youtube, gemini, chatgpt, grok, chrome, min_messages)
+    report = generate_report(youtube, gemini, chatgpt, grok, chrome, min_messages, gemini_text)
 
     # Write report
     output_path = os.path.abspath(args.output)

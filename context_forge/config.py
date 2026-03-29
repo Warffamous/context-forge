@@ -15,6 +15,7 @@ DEFAULT_CONFIG = {
     "takeout_dirs": [],
     "chatgpt_export": None,
     "grok_export": None,
+    "gemini_dirs": [],
     "youtube_min_watch_seconds": 30,
     "chat_min_messages": 5,
     "chat_min_density": 3,

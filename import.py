@@ -37,6 +37,7 @@ from context_forge.importers.topics_index import generate_all_indexes
 from context_forge.parsers.gemini import parse_all_gemini
 from context_forge.parsers.chatgpt import parse_conversations_json, find_chatgpt_data
 from context_forge.parsers.grok import parse_all_grok
+from context_forge.parsers.gemini_text import parse_all_gemini_text
 
 
 def get_db(config: dict) -> ImportQueueDB:
@@ -225,6 +226,37 @@ def cmd_grok(config: dict):
         db.close()
 
 
+def cmd_gemini_text(config: dict):
+    """Extract knowledge from Gemini plain-text conversations."""
+    errors = validate_config(config, require_api_key=True)
+    if errors:
+        for e in errors:
+            print(f"Error: {e}", file=sys.stderr)
+        return
+
+    gemini_dirs = [d for d in config.get("gemini_dirs", []) if d]
+    if not gemini_dirs:
+        print("Error: gemini_dirs not configured.", file=sys.stderr)
+        return
+
+    vault_path = config["vault_path"]
+
+    print("Parsing Gemini plain-text conversations...")
+    conversations = parse_all_gemini_text(gemini_dirs)
+    if not conversations:
+        print("  No Gemini text conversations found.")
+        return
+
+    print(f"  Found {len(conversations)} conversations")
+
+    db = get_db(config)
+    try:
+        result = process_conversations(conversations, config, db, vault_path, "gemini")
+        print(f"\n  Results: {result['scored']} scored, {result['extracted']} extracted, {result['written']} notes written")
+    finally:
+        db.close()
+
+
 def cmd_bookmarks(config: dict):
     """Import Chrome bookmarks into vault."""
     takeout_dirs = [d for d in config.get("takeout_dirs", []) if d and os.path.isdir(d)]
@@ -350,6 +382,8 @@ def _reload_conversations(config: dict, source: str) -> list[dict]:
             return parse_all_grok(grok_path)
         return []
 
+    # Gemini text conversations are stored under source="gemini" too,
+    # so they're already covered by the gemini reload above.
     return []
 
 
@@ -366,6 +400,7 @@ def main():
     parser.add_argument("--gemini", action="store_true", help="Extract from Gemini conversations")
     parser.add_argument("--chatgpt", action="store_true", help="Extract from ChatGPT conversations")
     parser.add_argument("--grok", action="store_true", help="Extract from Grok conversations")
+    parser.add_argument("--gemini-text", action="store_true", help="Extract from Gemini plain-text .txt files")
     parser.add_argument("--bookmarks", action="store_true", help="Import Chrome bookmarks")
     parser.add_argument("--topics-index", action="store_true", help="Generate topic index archives")
 
@@ -378,7 +413,7 @@ def main():
     # Need at least one action
     actions = [
         args.youtube_history, args.youtube_liked, args.youtube_subs,
-        args.gemini, args.chatgpt, args.grok,
+        args.gemini, args.chatgpt, args.grok, args.gemini_text,
         args.bookmarks, args.topics_index,
         args.status, args.resume,
     ]
@@ -403,6 +438,8 @@ def main():
         cmd_chatgpt(config)
     if args.grok:
         cmd_grok(config)
+    if args.gemini_text:
+        cmd_gemini_text(config)
     if args.bookmarks:
         cmd_bookmarks(config)
     if args.topics_index:

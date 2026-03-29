@@ -14,6 +14,14 @@ from context_forge.parsers.chatgpt import (
     find_chatgpt_data,
 )
 from context_forge.parsers.youtube import find_youtube_data
+from context_forge.parsers.grok import parse_grok_json, find_grok_data, parse_all_grok
+from context_forge.parsers.gemini_text import (
+    parse_gemini_text_file,
+    find_gemini_text_files,
+    parse_all_gemini_text,
+    _detect_turn_markers,
+    _split_into_conversations,
+)
 from context_forge.parsers.chrome import parse_bookmarks_html
 
 
@@ -334,6 +342,197 @@ class TestYouTubeFindData(unittest.TestCase):
             found = find_youtube_data(tmpdir)
             self.assertIn("watch_history", found)
             self.assertIn("MyActivity.json", found["watch_history"])
+
+
+class TestChatGPTDeduplication(unittest.TestCase):
+    def test_split_files_deduplication(self):
+        """Test that duplicate conversations across split files are deduplicated."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create two split files with an overlapping conversation
+            data_0 = [
+                {"id": "conv_a", "title": "Conv A", "mapping": {
+                    "root": {"parent": None, "message": None},
+                    "m1": {"parent": "root", "message": {
+                        "author": {"role": "user"},
+                        "content": {"parts": ["hello"]},
+                    }},
+                }},
+                {"id": "conv_b", "title": "Conv B", "mapping": {
+                    "root": {"parent": None, "message": None},
+                }},
+            ]
+            data_1 = [
+                {"id": "conv_b", "title": "Conv B Updated", "mapping": {
+                    "root": {"parent": None, "message": None},
+                    "m1": {"parent": "root", "message": {
+                        "author": {"role": "user"},
+                        "content": {"parts": ["world"]},
+                    }},
+                }},
+                {"id": "conv_c", "title": "Conv C", "mapping": {
+                    "root": {"parent": None, "message": None},
+                }},
+            ]
+            with open(os.path.join(tmpdir, "conversations-000.json"), "w") as f:
+                json.dump(data_0, f)
+            with open(os.path.join(tmpdir, "conversations-001.json"), "w") as f:
+                json.dump(data_1, f)
+
+            convs = parse_conversations_json(tmpdir)
+            ids = [c["id"] for c in convs]
+            # conv_b should appear only once (deduplicated)
+            self.assertEqual(ids.count("conv_b"), 1)
+            # Should have 3 unique conversations
+            self.assertEqual(len(convs), 3)
+            # The later occurrence of conv_b should win (has "world" message)
+            conv_b = [c for c in convs if c["id"] == "conv_b"][0]
+            self.assertEqual(conv_b["title"], "Conv B Updated")
+
+
+class TestGrokParser(unittest.TestCase):
+    def test_parse_conversation_objects(self):
+        """Test parsing Grok JSON with conversation objects."""
+        data = [
+            {
+                "id": "grok_conv_1",
+                "title": "Test Chat",
+                "messages": [
+                    {"role": "human", "content": "Hi Grok"},
+                    {"role": "grok", "content": "Hello!"},
+                ],
+                "created_at": "2025-01-01T00:00:00Z",
+            }
+        ]
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(data, f)
+            f.flush()
+            convs = parse_grok_json(f.name)
+        os.unlink(f.name)
+
+        self.assertEqual(len(convs), 1)
+        self.assertEqual(convs[0]["source"], "grok")
+        self.assertEqual(convs[0]["messages"][0]["role"], "user")
+        self.assertEqual(convs[0]["messages"][1]["role"], "assistant")
+
+    def test_parse_flat_messages(self):
+        """Test parsing Grok JSON with flat message records."""
+        data = [
+            {"conversation_id": "c1", "role": "human", "content": "Question", "timestamp": "2025-01-01T00:00:00Z"},
+            {"conversation_id": "c1", "role": "grok", "content": "Answer", "timestamp": "2025-01-01T00:00:01Z"},
+            {"conversation_id": "c2", "role": "user", "content": "Hello", "timestamp": "2025-01-01T00:01:00Z"},
+        ]
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(data, f)
+            f.flush()
+            convs = parse_grok_json(f.name)
+        os.unlink(f.name)
+
+        self.assertEqual(len(convs), 2)
+        c1 = [c for c in convs if c["id"] == "c1"][0]
+        self.assertEqual(len(c1["messages"]), 2)
+        self.assertEqual(c1["messages"][0]["role"], "user")
+        self.assertEqual(c1["messages"][1]["role"], "assistant")
+
+    def test_find_grok_data_single_file(self):
+        """Test that find_grok_data accepts a single JSON file."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump([], f)
+            f.flush()
+            found = find_grok_data(f.name)
+        os.unlink(f.name)
+
+        self.assertIn("conversations", found)
+        self.assertEqual(len(found["conversations"]), 1)
+
+    def test_find_grok_data_directory(self):
+        """Test that find_grok_data walks a directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "prod-grok-backend.json"), "w") as f:
+                json.dump([], f)
+            found = find_grok_data(tmpdir)
+            self.assertIn("conversations", found)
+
+
+class TestGeminiTextParser(unittest.TestCase):
+    def test_detect_turn_markers(self):
+        text = "You\nHello\nGemini\nHi there\n"
+        markers = _detect_turn_markers(text)
+        self.assertEqual(len(markers), 2)
+        self.assertEqual(markers[0][2], "user")
+        self.assertEqual(markers[1][2], "assistant")
+
+    def test_parse_simple_conversation(self):
+        text = "You\nWhat is Python?\nGemini\nPython is a programming language.\n"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write(text)
+            f.flush()
+            convs = parse_gemini_text_file(f.name)
+        os.unlink(f.name)
+
+        self.assertEqual(len(convs), 1)
+        self.assertEqual(convs[0]["source"], "gemini")
+        self.assertEqual(len(convs[0]["messages"]), 2)
+        self.assertEqual(convs[0]["messages"][0]["role"], "user")
+        self.assertEqual(convs[0]["messages"][0]["content"], "What is Python?")
+        self.assertEqual(convs[0]["messages"][1]["role"], "assistant")
+
+    def test_parse_multiple_conversations(self):
+        text = (
+            "You\nFirst question\nGemini\nFirst answer\n"
+            "---\n"
+            "You\nSecond question\nGemini\nSecond answer\n"
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write(text)
+            f.flush()
+            convs = parse_gemini_text_file(f.name)
+        os.unlink(f.name)
+
+        self.assertEqual(len(convs), 2)
+
+    def test_split_into_conversations(self):
+        text = "part one\n---\npart two\n===\npart three"
+        chunks = _split_into_conversations(text)
+        self.assertEqual(len(chunks), 3)
+
+    def test_find_gemini_text_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for name in ["chat1.txt", "chat2.txt", "notes.md"]:
+                with open(os.path.join(tmpdir, name), "w") as f:
+                    f.write("test")
+            files = find_gemini_text_files(tmpdir)
+            self.assertEqual(len(files), 2)
+            self.assertTrue(all(f.endswith(".txt") for f in files))
+
+    def test_parse_all_gemini_text(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            text = "You\nHi\nGemini\nHello!\n"
+            with open(os.path.join(tmpdir, "chat.txt"), "w") as f:
+                f.write(text)
+
+            convs = parse_all_gemini_text([tmpdir])
+            self.assertEqual(len(convs), 1)
+            self.assertEqual(convs[0]["source"], "gemini")
+
+    def test_bold_markers(self):
+        """Test that **You** and **Gemini** markers work."""
+        text = "**You**\nHello\n**Gemini**\nHi there\n"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write(text)
+            f.flush()
+            convs = parse_gemini_text_file(f.name)
+        os.unlink(f.name)
+
+        self.assertEqual(len(convs), 1)
+        self.assertEqual(len(convs[0]["messages"]), 2)
+
+    def test_empty_file(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("")
+            f.flush()
+            convs = parse_gemini_text_file(f.name)
+        os.unlink(f.name)
+        self.assertEqual(len(convs), 0)
 
 
 if __name__ == "__main__":

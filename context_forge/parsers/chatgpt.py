@@ -160,7 +160,11 @@ def _is_split_filename(filename: str) -> bool:
 
 
 def _load_split_files(directory: str) -> list[dict]:
-    """Load and merge all conversations-*.json split files from a directory."""
+    """Load, merge, and deduplicate all conversations-*.json split files from a directory.
+
+    OpenAI exports can contain duplicate conversations across split files.
+    Deduplication is by conversation ID, keeping the last occurrence (most recent).
+    """
     patterns = [
         os.path.join(directory, "conversations-*.json"),
         os.path.join(directory, "conversations.json"),
@@ -185,7 +189,17 @@ def _load_split_files(directory: str) -> list[dict]:
         except (json.JSONDecodeError, IOError):
             pass
 
-    return all_conversations
+    # Deduplicate by conversation ID (keep last occurrence)
+    seen = {}
+    for conv in all_conversations:
+        conv_id = conv.get("id", conv.get("conversation_id"))
+        if conv_id:
+            seen[conv_id] = conv
+        else:
+            # No ID — keep as-is (append with a unique key)
+            seen[id(conv)] = conv
+
+    return list(seen.values())
 
 
 def find_chatgpt_data(path: str) -> dict:
@@ -216,8 +230,28 @@ def find_chatgpt_data(path: str) -> dict:
         if split_files:
             found["conversations"] = path  # Pass directory — parser handles it
             found["file_count"] = len(split_files)
+            if os.path.exists(single_file):
+                found["file_count"] += 1
         elif os.path.exists(single_file):
             found["conversations"] = single_file
             found["file_count"] = 1
+        else:
+            # Recurse into subdirectories (handles deep export paths like
+            # af927f53.../conversations-*.json)
+            for entry in os.listdir(path):
+                subdir = os.path.join(path, entry)
+                if os.path.isdir(subdir):
+                    sub_split = glob.glob(os.path.join(subdir, "conversations-*.json"))
+                    sub_single = os.path.join(subdir, "conversations.json")
+                    if sub_split:
+                        found["conversations"] = subdir
+                        found["file_count"] = len(sub_split)
+                        if os.path.exists(sub_single):
+                            found["file_count"] += 1
+                        break
+                    elif os.path.exists(sub_single):
+                        found["conversations"] = sub_single
+                        found["file_count"] = 1
+                        break
 
     return found
